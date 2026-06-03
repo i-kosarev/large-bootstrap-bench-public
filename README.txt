@@ -19,10 +19,11 @@ stable methodology, portable across SLURM and Flux.
   # The command above is portable; per-site settings are all env knobs. By default,
   # scheduler routing flags are omitted and OpenMPI chooses its default launcher/fabric.
   # Set the ones your cluster needs:
-  #   JOBID                  existing allocation to reuse instead of allocating;
-  #                          JOB_ID and SLURM_JOB_ID are accepted aliases. If the
-  #                          provided job is not RUNNING, core.sh aborts instead
-  #                          of falling back to a fresh allocation.
+  #   JOBID                  existing allocation to reuse instead of allocating
+  #                          (JOB_ID is accepted as an alias). To reuse the current
+  #                          Slurm allocation explicitly, pass JOBID=$SLURM_JOB_ID.
+  #                          If the provided job is not RUNNING, core.sh aborts
+  #                          instead of falling back to a fresh allocation.
   #   PARTITION ACCOUNT QOS   scheduler routing (empty => omit the flag).
   #   IFNAME                  TCP iface for MPI oob/btl (default eth0; set per site).
   #   MPI_BIN                 dir holding mpirun (default: take from PATH).
