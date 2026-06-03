@@ -20,6 +20,12 @@ HERE=$(cd "$(dirname "$0")"&&pwd)
 : "${N:?set N}"; : "${TARGET:=100}"; : "${BIND:=core}"; : "${TIMEOUT:=$((150+N*10))}"
 : "${SETTLE:=20}"; : "${SPARE:=0}"; : "${OUTROOT:=$HERE/results}"; : "${FAILMAX:=5}"
 : "${EXCLUDE_NODES:=}"
+# Existing-allocation aliases. JOBID is the canonical harness knob; JOB_ID and
+# SLURM_JOB_ID make it convenient to reuse scheduler-native environment names.
+if [ -z "${JOBID:-}" ]; then
+  JOBID="${JOB_ID:-${SLURM_JOB_ID:-}}"
+fi
+EXTERNAL_JOB=0; [ -n "${JOBID:-}" ] && EXTERNAL_JOB=1
 source "$HERE/adapters/$CLUSTER.sh"
 source "$HERE/plugins/$PLUGIN.sh"
 PPN=$(bench_ppn); EXP=$(bench_expect "$N"); NRANKS=$((N*PPN)); LDP=$(bench_ldpath)
@@ -64,7 +70,8 @@ is_clean(){ local h; h=$(cluster_node_health "$1"); awk -v h="$h" -v L="$LOADMAX
 # --- acquire nodes: use provided JOBID/NODELIST or allocate N (+spare) clean from pool ---
 acquire(){
   local we_allocated=0
-  if [ -n "${JOBID:-}" ] && [ "$(cluster_alloc_state "$JOBID")" = RUNNING ]; then
+  if [ "$EXTERNAL_JOB" = 1 ]; then
+    [ "$(cluster_alloc_state "$JOBID")" = RUNNING ] || { log "provided JOBID=$JOBID is not RUNNING"; return 1; }
     mapfile -t pool < <(cluster_alloc_nodes "$JOBID")
   else
     mapfile -t idle < <(cluster_idle_nodes)
@@ -116,7 +123,13 @@ declare -A fail_streak=()
 while :; do
   c1=$(complete "$(bench_arms|awk '{print $1}')"); c2=$(complete "$(bench_arms|awk '{print $2}')")
   if [ "$c1" -ge "$TARGET" ] && [ "$c2" -ge "$TARGET" ]; then log "TARGET met ($c1/$c2)"; break; fi
-  [ "$(cluster_alloc_state "$JOBID")" = RUNNING ] || { log "alloc $JOBID dead; re-acquire"; unset JOBID; acquire || break; continue; }
+  if [ "$(cluster_alloc_state "$JOBID")" != RUNNING ]; then
+    if [ "$EXTERNAL_JOB" = 1 ]; then
+      log "provided alloc $JOBID dead; abort"
+      exit 1
+    fi
+    log "alloc $JOBID dead; re-acquire"; unset JOBID; acquire || break; continue
+  fi
   # health gate with settle-sleep (not busy-retry)
   gate_ok=1; for n in "${NODES[@]}"; do is_clean "$n" || { gate_ok=0; break; }; done
   if [ "$gate_ok" -ne 1 ]; then log "health gate: settling ${SETTLE}s"; sleep "$SETTLE"; continue; fi
