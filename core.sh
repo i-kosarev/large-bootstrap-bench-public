@@ -20,10 +20,11 @@ HERE=$(cd "$(dirname "$0")"&&pwd)
 : "${N:?set N}"; : "${TARGET:=100}"; : "${BIND:=core}"; : "${TIMEOUT:=$((150+N*10))}"
 : "${SETTLE:=20}"; : "${SPARE:=0}"; : "${OUTROOT:=$HERE/results}"; : "${FAILMAX:=5}"
 : "${EXCLUDE_NODES:=}"
-# Existing-allocation aliases. JOBID is the canonical harness knob; JOB_ID and
-# SLURM_JOB_ID make it convenient to reuse scheduler-native environment names.
+# Existing-allocation aliases. JOBID is the canonical harness knob; JOB_ID is
+# accepted as an explicit spelling variant. Ambient scheduler variables such as
+# SLURM_JOB_ID are intentionally not auto-detected, to avoid surprising reuse.
 if [ -z "${JOBID:-}" ]; then
-  JOBID="${JOB_ID:-${SLURM_JOB_ID:-}}"
+  JOBID="${JOB_ID:-}"
 fi
 EXTERNAL_JOB=0; [ -n "${JOBID:-}" ] && EXTERNAL_JOB=1
 source "$HERE/adapters/$CLUSTER.sh"
