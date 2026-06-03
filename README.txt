@@ -15,7 +15,9 @@ stable methodology, portable across SLURM and Flux.
   # <plugin> = a plugins/<plugin>.sh bench definition (see LAYOUT), e.g.
   #   rccl_bootstrap_ib (IB fabric) or rccl_bootstrap_tcp (plain-TCP fabric).
   # Resume: rerun the identical command (done-iter count is read from the logs).
-  # Use a known JOBID instead of allocating: add JOBID=<jid>.
+  # Use an existing allocation instead of letting core.sh allocate: add JOBID=<jid>.
+  # JOB_ID and SLURM_JOB_ID are accepted aliases; if a provided job is not RUNNING,
+  # core.sh aborts instead of falling back to a fresh allocation.
   #
   # The command above is portable; per-site settings are all env knobs. By default,
   # scheduler routing flags are omitted and OpenMPI chooses its default launcher/fabric.
