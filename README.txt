@@ -13,9 +13,13 @@ stable methodology, portable across SLURM and Flux.
   # Results are written under $OUTROOT/<plugin>/<N>n/{on,off}.log; core.sh's stdout
   # is just progress. Run it backgrounded if you like: append '&' (or use tmux/screen).
   # Every side-effecting cluster command is echoed on a "    >>> ..." line right
-  # before it runs, so a live run is fully traceable.
-  # DRY_RUN=1 prints the full command plan (allocation + per-arm launches) and
-  # executes nothing -- no scheduler calls, no logs. Use it to preview a run:
+  # before it runs -- the REAL command (e.g. the full `salloc ...` and
+  # `ssh ... mpirun ...`), so a live run is fully traceable and the lines are
+  # copy-pasteable.
+  # DRY_RUN=1 prints those real, runnable commands (the salloc + per-arm ssh/mpirun
+  # for one paired iteration, with real node names) and executes NOTHING: it does
+  # only read-only discovery (sinfo/squeue) to fill in node names -- no allocate,
+  # launch, cancel, ssh, or result logs. Use it to preview / hand-run a job:
   #   DRY_RUN=1 CLUSTER=slurm PLUGIN=<plugin> N=<nodes> ... bash core.sh
   # <plugin> = a plugins/<plugin>.sh bench definition (see LAYOUT), e.g.
   #   rccl_bootstrap_ib (IB fabric) or rccl_bootstrap_tcp (plain-TCP fabric).

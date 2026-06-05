@@ -44,10 +44,15 @@ cluster_idle_nodes() {
     | { if [ -n "$EXCLUDE_NODES" ]; then grep -vE "$(echo "$EXCLUDE_NODES"|tr ',' '|')"; else cat; fi; } \
     | sort -u
 }
+_alloc_argv() {
+  local nl=$1 n; n=$(echo "$nl"|tr ',' '\n'|grep -c .)
+  ALLOC_ARGV=(flux alloc -N "$n" --requires="host:$nl" -t "$ALLOC_TIME" --bg)
+}
+cluster_alloc_cmd() { _alloc_argv "$1"; echo "${ALLOC_ARGV[*]}"; }
 cluster_alloc_nodelist() {
   # `flux alloc -N <n> --requires=host:<csv> -t <time> --bg` returns a JOBID (child instance).
-  local nl=$1 n; n=$(echo "$nl"|tr ',' '\n'|grep -c .)
-  flux alloc -N "$n" --requires="host:$nl" -t "$ALLOC_TIME" --bg 2>/dev/null
+  _alloc_argv "$1"
+  "${ALLOC_ARGV[@]}" 2>/dev/null
 }
 cluster_alloc_state() { # map flux job status -> RUNNING|PENDING|DEAD
   # verified status strings: RUN / SCHED / DEPEND / CLEANUP / INACTIVE
@@ -58,24 +63,26 @@ cluster_alloc_state() { # map flux job status -> RUNNING|PENDING|DEAD
 cluster_alloc_nodes() { flux hostlist --expand "$1" 2>/dev/null | tr ' ' '\n'; }   # JOBID -> node list
 cluster_time_left_sec() { flux job timeleft "$1" 2>/dev/null | awk '{printf "%d", $1+0}'; }  # seconds
 cluster_cancel() { flux cancel "$1" 2>/dev/null; }
-cluster_launch() {
-  # Launch inside the --bg alloc via `flux proxy $JOBID flux run`. $JOBID is exported by core.sh.
-  # -N<nodes> -n<nranks> ONLY (per-resource); --tasks-per-node conflicts with -N on flux run.
-  # mpirun-style "-x VAR=val" tokens from the plugin -> "env VAR=val" prefix.
+cluster_cancel_cmd() { echo "flux cancel $1"; }
+# Build the flux launch argv into LAUNCH_ARGV. Single source of truth for run + print.
+_launch_build() {
   local head=$1 hf=$2 nranks=$3 ppn=$4 bind=$5 tmo=$6 ldp=$7; shift 7
   [ "$1" = "--" ] && shift
   local aff=""; [ "$bind" = "core" ] && aff="-o cpu-affinity=per-task"
   local gpu=""; [ "${GPUS_PER_TASK:-1}" -gt 0 ] 2>/dev/null && gpu="--gpus-per-task=$GPUS_PER_TASK"
-  local envpfx="" tok cmd=()
+  local envpfx="" cmd=()
   while [ $# -gt 0 ]; do
     if [ "$1" = "-x" ]; then envpfx="$envpfx ${2}"; shift 2
     else cmd+=("$1"); shift; fi
   done
   local nodes=$((nranks/ppn))
-  timeout "$tmo" flux proxy "${JOBID:?flux: JOBID unset}" \
-    env LD_LIBRARY_PATH="$ldp" flux run -N "$nodes" -n "$nranks" $aff $gpu \
-    env $envpfx "${cmd[@]}"
+  # shellcheck disable=SC2206
+  LAUNCH_ARGV=(timeout "$tmo" flux proxy "${JOBID:?flux: JOBID unset}"
+    env LD_LIBRARY_PATH="$ldp" flux run -N "$nodes" -n "$nranks" $aff $gpu
+    env $envpfx "${cmd[@]}")
 }
+cluster_launch() { _launch_build "$@"; "${LAUNCH_ARGV[@]}"; }
+cluster_launch_cmd() { _launch_build "$@"; echo "${LAUNCH_ARGV[*]}"; }
 cluster_node_health() {
   ssh $SSHO "$1" 'echo "$(ps -eo stat,comm|awk "\$1~/^D/ && \$2~/gather|python/"|wc -l) $(cut -d" " -f1 /proc/loadavg) $(ls /sys/class/kfd/kfd/proc 2>/dev/null|wc -l)"' 2>/dev/null || echo "ERR 999 999"
 }
