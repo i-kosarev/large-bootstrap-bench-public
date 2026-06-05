@@ -169,6 +169,10 @@ if [ "$DRY_RUN" = 1 ]; then
   # build the real hostfile + head so the launch line below is exactly what would run
   : > "$HF"; for n in "${NODES[@]}"; do echo "$n slots=$PPN" >> "$HF"; done
   HEAD="${NODES[0]}"
+  # In the self-allocate path no JOBID exists yet (we didn't allocate). Some adapters
+  # (flux) reference it when building the launch command, so give it a placeholder for
+  # the printed plan only.
+  [ -n "${JOBID:-}" ] || JOBID="<jobid>"
   echo "# per-node health gate (run for each allocated node): 0 D-state, load<$LOADMAX, kfd<=1"
   read -ra A <<< "$(bench_arms)"
   echo "# one paired iteration (both arms); the loop repeats this until TARGET=$TARGET:"
