@@ -29,6 +29,14 @@ fi
 EXTERNAL_JOB=0; [ -n "${JOBID:-}" ] && EXTERNAL_JOB=1
 source "$HERE/adapters/$CLUSTER.sh"
 source "$HERE/plugins/$PLUGIN.sh"
+# Command printers are optional in the adapter contract: an adapter SHOULD provide
+# cluster_{alloc,launch,cancel}_cmd that print the real, copy-pasteable command, but
+# if it doesn't (e.g. minimal test adapters), fall back to a readable description so
+# tracing/DRY_RUN still works.
+type cluster_alloc_cmd       >/dev/null 2>&1 || cluster_alloc_cmd()       { echo "cluster_alloc_nodelist $1"; }
+type cluster_launch_cmd      >/dev/null 2>&1 || cluster_launch_cmd()      { echo "cluster_launch $*"; }
+type cluster_cancel_cmd      >/dev/null 2>&1 || cluster_cancel_cmd()      { echo "cluster_cancel $1"; }
+type cluster_alloc_state_cmd >/dev/null 2>&1 || cluster_alloc_state_cmd() { echo "cluster_alloc_state $1"; }
 PPN=$(bench_ppn); EXP=$(bench_expect "$N"); NRANKS=$((N*PPN)); LDP=$(bench_ldpath)
 OUT="$OUTROOT/${PLUGIN}/${N}n"; mkdir -p "$OUT"
 HF="$OUT/hostfile.txt"
@@ -82,7 +90,7 @@ acquire(){
     local need=$((N+SPARE))   # spare nodes let acquire skip dirty entries from the pool
     [ "${#idle[@]}" -lt "$N" ] && { log "only ${#idle[@]} idle < $N needed"; return 1; }
     local take; take=$(printf '%s\n' "${idle[@]}"|head -$((need<${#idle[@]}?need:${#idle[@]}))|paste -sd,)
-    echo "    >>> cluster_alloc_nodelist $take"
+    echo "    >>> $(cluster_alloc_cmd "$take")"
     JOBID=$(cluster_alloc_nodelist "$take") || { log "alloc failed"; return 1; }
     we_allocated=1
     log "allocated JOBID=$JOBID"; mapfile -t pool < <(cluster_alloc_nodes "$JOBID")
@@ -92,7 +100,7 @@ acquire(){
   for n in "${pool[@]}"; do is_clean "$n" && CLEAN+=("$n"); [ "${#CLEAN[@]}" -ge "$N" ] && break; done
   if [ "${#CLEAN[@]}" -lt "$N" ]; then
     log "only ${#CLEAN[@]}/$N clean nodes"
-    [ "$we_allocated" = 1 ] && { log "freeing leaked alloc $JOBID"; echo "    >>> cluster_cancel $JOBID"; cluster_cancel "$JOBID"; unset JOBID; }
+    [ "$we_allocated" = 1 ] && { log "freeing leaked alloc $JOBID"; echo "    >>> $(cluster_cancel_cmd "$JOBID")"; cluster_cancel "$JOBID"; unset JOBID; }
     return 1
   fi
   NODES=("${CLEAN[@]:0:N}")
@@ -102,10 +110,12 @@ acquire(){
 }
 
 run_arm(){ local arm=$1 it=$2 tmp rc cmd
-  # Resolve the bench command ONCE so the echoed plan is exactly what runs (some
-  # plugins are non-deterministic, e.g. randomized args), then echo + execute it.
+  # Resolve the bench command ONCE so the printed command is exactly what runs (some
+  # plugins are non-deterministic, e.g. randomized args). Print the REAL, copy-pasteable
+  # launch command (ssh ... mpirun ... / flux ...), then execute it (skip if DRY_RUN).
   cmd=$(bench_arm_cmd "$arm")
-  echo "    >>> [iter $it $arm] cluster_launch $HEAD $HF $NRANKS $PPN $BIND $TIMEOUT $LDP -- $cmd"
+  # shellcheck disable=SC2086
+  echo "    >>> [iter $it $arm] $(cluster_launch_cmd "$HEAD" "$HF" "$NRANKS" "$PPN" "$BIND" "$TIMEOUT" "$LDP" -- $cmd)"
   [ "$DRY_RUN" = 1 ] && return 0
   if ! tmp=$(mktemp "$OUT/.${arm}.${it}.XXXXXX"); then
     echo "=== failed iter $it $arm rc=125 t=$(date +%s) mktemp failed ===" >> "$OUT/$arm.log" 2>/dev/null || true
@@ -127,22 +137,43 @@ run_arm(){ local arm=$1 it=$2 tmp rc cmd
   return "$rc"
 }
 
-# DRY RUN: don't touch the scheduler at all. Print the plan -- what acquire would do
-# and the exact per-arm launch for one representative iteration -- then exit.
+# DRY RUN: print REAL, copy-pasteable commands -- the actual salloc / ssh mpirun (or
+# flux) lines you could run by hand -- then exit WITHOUT executing them. To produce
+# real node names it performs only READ-ONLY discovery (sinfo/squeue via the adapter);
+# it never allocates, launches, cancels, or sshes into a node. (The one local write is
+# OUTROOT/<plugin>/<N>n/hostfile.txt, refreshed so the printed launch line is exact --
+# no scheduler contact, no result logs.)
 if [ "$DRY_RUN" = 1 ]; then
-  log "DRY_RUN=1: printing the command plan, executing nothing."
+  log "DRY_RUN=1: printing real commands (read-only discovery only), executing nothing."
   if [ "$EXTERNAL_JOB" = 1 ]; then
-    echo "    >>> reuse external JOBID=$JOBID (would verify RUNNING via cluster_alloc_state)"
-    echo "    >>> nodes := cluster_alloc_nodes $JOBID"
+    echo "# reuse external JOBID=$JOBID (verify it is RUNNING):"
+    echo "    >>> $(cluster_alloc_state_cmd "$JOBID")"
+    mapfile -t NODES < <(cluster_alloc_nodes "$JOBID")
+    [ "${#NODES[@]}" -eq 0 ] && NODES=("<node1>")
   else
-    echo "    >>> idle := cluster_idle_nodes   # pick N=$N (+SPARE=$SPARE) clean"
-    echo "    >>> JOBID := cluster_alloc_nodelist <first $((N+SPARE)) idle nodes>"
+    mapfile -t idle < <(cluster_idle_nodes)
+    local_need=$((N+SPARE))
+    if [ "${#idle[@]}" -ge "$N" ]; then
+      local_take_n=$((local_need<${#idle[@]}?local_need:${#idle[@]}))
+      take=$(printf '%s\n' "${idle[@]}"|head -"$local_take_n"|paste -sd,)
+      mapfile -t NODES < <(printf '%s\n' "${idle[@]}"|head -"$N")
+    else
+      log "DRY_RUN: only ${#idle[@]} idle (need $N) right now; showing the command shape with placeholder nodes."
+      local_take_n=$local_need
+      take=$(printf 'node%d,' $(seq 1 "$local_need")|sed 's/,$//')
+      mapfile -t NODES < <(printf 'node%d\n' $(seq 1 "$N"))
+    fi
+    echo "# allocate $local_take_n node(s) (want N=$N + SPARE=$SPARE = $local_need; capped to idle), keep first $N clean:"
+    echo "    >>> $(cluster_alloc_cmd "$take")"
   fi
-  echo "    >>> per node: cluster_node_health <node>  # gate: 0 D-state, load<$LOADMAX, kfd<=1"
-  HEAD="<head-node>"; HF="$OUT/hostfile.txt"
+  # build the real hostfile + head so the launch line below is exactly what would run
+  : > "$HF"; for n in "${NODES[@]}"; do echo "$n slots=$PPN" >> "$HF"; done
+  HEAD="${NODES[0]}"
+  echo "# per-node health gate (run for each allocated node): 0 D-state, load<$LOADMAX, kfd<=1"
   read -ra A <<< "$(bench_arms)"
+  echo "# one paired iteration (both arms); the loop repeats this until TARGET=$TARGET:"
   for arm in "${A[@]}"; do run_arm "$arm" 1; done
-  log "DRY_RUN: would loop the above until each arm reaches TARGET=$TARGET (then cluster_cancel \$JOBID if self-allocated)."
+  [ "$EXTERNAL_JOB" = 1 ] || echo "    >>> # when done (self-allocated): $(cluster_cancel_cmd "${JOBID:-<jobid>}")"
   exit 0
 fi
 

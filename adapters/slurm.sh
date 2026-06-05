@@ -43,17 +43,24 @@ cluster_idle_nodes() {
     | { if [ -n "$EXCLUDE_NODES" ]; then grep -vE "$(echo "$EXCLUDE_NODES"|tr ',' '|')"; else cat; fi; } \
     | sort -u
 }
-# Allocate exactly the given comma-sep nodelist NOW (immediate) or fail. Prints JOBID.
-cluster_alloc_nodelist() {
+# Build the salloc argv for a nodelist into ALLOC_ARGV (single source of truth so the
+# executed command and the printed/dry-run command are byte-identical).
+_alloc_argv() {
   local nl=$1 n; n=$(echo "$nl"|tr ',' '\n'|grep -c .)
   local flags=()
   [ -n "$PARTITION" ] && flags+=(-p "$PARTITION")
   [ -n "$ACCOUNT" ] && flags+=(--account="$ACCOUNT")
   [ -n "$QOS" ] && flags+=(--qos="$QOS")
+  ALLOC_ARGV=(salloc --no-shell --exclusive -N "$n" --nodelist="$nl" "${flags[@]}" --time="$ALLOC_TIME" --immediate=60)
+}
+# Print the exact, copy-pasteable allocation command for a nodelist (no execution).
+cluster_alloc_cmd() { _alloc_argv "$1"; echo "${ALLOC_ARGV[*]}"; }
+# Allocate exactly the given comma-sep nodelist NOW (immediate) or fail. Prints JOBID.
+cluster_alloc_nodelist() {
+  _alloc_argv "$1"
   local log; log=$(mktemp)
-  salloc --no-shell --exclusive -N "$n" --nodelist="$nl" \
-    "${flags[@]}" --time="$ALLOC_TIME" \
-    --immediate=60 > "$log" 2>&1 &
+  trap 'rm -f "$log"' RETURN          # don't leak the salloc capture file under /tmp
+  "${ALLOC_ARGV[@]}" > "$log" 2>&1 &
   local i jid=""
   for i in $(seq 1 30); do
     jid=$(grep -oE 'Granted job allocation [0-9]+' "$log" 2>/dev/null|awk '{print $4}'|tail -1)
@@ -67,6 +74,8 @@ cluster_alloc_state() { # RUNNING|PENDING|DEAD
     R) echo RUNNING;; PD|CF) echo PENDING;; *) echo DEAD;;
   esac
 }
+# Print the exact, copy-pasteable job-state query (no execution).
+cluster_alloc_state_cmd() { echo "squeue -h -j $1 -o '%t'"; }
 cluster_alloc_nodes() { scontrol show hostnames "$(squeue -h -j "$1" -o '%N' 2>/dev/null)" 2>/dev/null; }
 cluster_time_left_sec() {
   local L; L=$(squeue -h -j "$1" -o '%L' 2>/dev/null); [ -z "$L" ] && { echo -1; return; }
@@ -74,6 +83,7 @@ cluster_time_left_sec() {
   awk -v t="$L" 'BEGIN{n=split(t,a,/[-:]/); s=0; if(n==4)s=a[1]*86400+a[2]*3600+a[3]*60+a[4]; else if(n==3)s=a[1]*3600+a[2]*60+a[3]; else if(n==2)s=a[1]*60+a[2]; print s}'
 }
 cluster_cancel() { scancel "$1" 2>/dev/null; }
+cluster_cancel_cmd() { echo "scancel $1"; }
 # Launch a command across the alloc via direct-SSH mpirun (rsh; pam_slurm_adopt gives GPU).
 # args: HEAD HOSTFILE NRANKS PPN BIND(core|none) TIMEOUT LDPATH -- <env -x ...> <cmd...>
 #
@@ -84,15 +94,21 @@ cluster_cancel() { scancel "$1" 2>/dev/null; }
 # (verified by isolating this single flag: --hostfile -> ras_base_allocate, --host -> clean
 # 16/16 ranks; -mca ras ^slurm and stripping SLURM_* env did NOT rescue --hostfile).
 # MCA/transport flags come from MPI_MCA_ARGS; mpirun is taken from MPI_BIN if set.
-cluster_launch() {
+# Build the remote shell command (the string passed to ssh) into LAUNCH_REMOTE and the
+# ssh head into LAUNCH_HEAD. Single source of truth for both execution and printing.
+_launch_build() {
   local head=$1 hf=$2 nranks=$3 ppn=$4 bind=$5 tmo=$6 ldp=$7; shift 7
   [ "$1" = "--" ] && shift
   local bindflag=""; [ "$bind" = "core" ] && bindflag="--bind-to core"
   local hostlist; hostlist=$(awk -v p="$ppn" 'NF{printf "%s%s:%s",sep,$1,p; sep=","}' "$hf")
   local mpirun_bin="mpirun" envpfx="export LD_LIBRARY_PATH=$ldp"
   [ -n "$MPI_BIN" ] && { mpirun_bin="$MPI_BIN/mpirun"; envpfx="export PATH=$MPI_BIN:\$PATH; $envpfx"; }
-  ssh $SSHO "$head" "$envpfx; timeout $tmo $mpirun_bin --host $hostlist -np $nranks --map-by ppr:${ppn}:node $bindflag $MPI_MCA_ARGS -x LD_LIBRARY_PATH $*"
+  LAUNCH_HEAD=$head
+  LAUNCH_REMOTE="$envpfx; timeout $tmo $mpirun_bin --host $hostlist -np $nranks --map-by ppr:${ppn}:node $bindflag $MPI_MCA_ARGS -x LD_LIBRARY_PATH $*"
 }
+cluster_launch() { _launch_build "$@"; ssh $SSHO "$LAUNCH_HEAD" "$LAUNCH_REMOTE"; }
+# Print the exact, copy-pasteable launch command (no execution).
+cluster_launch_cmd() { _launch_build "$@"; echo "ssh $SSHO $LAUNCH_HEAD \"$LAUNCH_REMOTE\""; }
 # Health of one node: prints "DSTATE LOAD KFD". core.sh decides clean/dirty.
 cluster_node_health() {
   ssh $SSHO "$1" 'echo "$(ps -eo stat,comm|awk "\$1~/^D/ && \$2~/gather|python/"|wc -l) $(cut -d" " -f1 /proc/loadavg) $(ls /sys/class/kfd/kfd/proc 2>/dev/null|wc -l)"' 2>/dev/null || echo "ERR 999 999"
