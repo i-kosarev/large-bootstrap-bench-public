@@ -49,4 +49,13 @@ grep -q 'pn1' /tmp/coredry_self.log || { echo "FAIL: self path did not use disco
 run_dry ext JOBID=external-abc     # external-JOBID path
 grep -q 'external JOBID=external-abc' /tmp/coredry_ext.log || { echo "FAIL: external path not shown"; exit 1; }
 
+# The external-path job-state verification must be rendered by the ADAPTER, not a
+# hardcoded scheduler command. Check each real adapter prints its own form.
+echo "--- adapter cluster_alloc_state_cmd ---"
+sout=$(bash -c 'source '"$ROOT"'/adapters/slurm.sh; cluster_alloc_state_cmd JID123'); echo "slurm: $sout"
+fout=$(bash -c 'source '"$ROOT"'/adapters/flux.sh;  cluster_alloc_state_cmd JID123'); echo "flux:  $fout"
+case "$sout" in *"squeue"*"JID123"*) ;; *) echo "FAIL: slurm state cmd wrong: $sout"; exit 1;; esac
+case "$fout" in *"flux jobs"*"JID123"*) ;; *) echo "FAIL: flux state cmd wrong: $fout"; exit 1;; esac
+[ "$sout" != "$fout" ] || { echo "FAIL: slurm and flux state cmds should differ"; exit 1; }
+
 echo "DRYRUN E2E: PASS"

@@ -60,6 +60,8 @@ cluster_alloc_state() { # map flux job status -> RUNNING|PENDING|DEAD
     RUN|run*) echo RUNNING;; SCHED|DEPEND|PENDING|CLEANUP|sched*) echo PENDING;; *) echo DEAD;;
   esac
 }
+# Print the exact, copy-pasteable job-state query (no execution).
+cluster_alloc_state_cmd() { echo "flux jobs -no '{status}' $1"; }
 cluster_alloc_nodes() { flux hostlist --expand "$1" 2>/dev/null | tr ' ' '\n'; }   # JOBID -> node list
 cluster_time_left_sec() { flux job timeleft "$1" 2>/dev/null | awk '{printf "%d", $1+0}'; }  # seconds
 cluster_cancel() { flux cancel "$1" 2>/dev/null; }

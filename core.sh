@@ -33,9 +33,10 @@ source "$HERE/plugins/$PLUGIN.sh"
 # cluster_{alloc,launch,cancel}_cmd that print the real, copy-pasteable command, but
 # if it doesn't (e.g. minimal test adapters), fall back to a readable description so
 # tracing/DRY_RUN still works.
-type cluster_alloc_cmd  >/dev/null 2>&1 || cluster_alloc_cmd()  { echo "cluster_alloc_nodelist $1"; }
-type cluster_launch_cmd >/dev/null 2>&1 || cluster_launch_cmd() { echo "cluster_launch $*"; }
-type cluster_cancel_cmd >/dev/null 2>&1 || cluster_cancel_cmd() { echo "cluster_cancel $1"; }
+type cluster_alloc_cmd       >/dev/null 2>&1 || cluster_alloc_cmd()       { echo "cluster_alloc_nodelist $1"; }
+type cluster_launch_cmd      >/dev/null 2>&1 || cluster_launch_cmd()      { echo "cluster_launch $*"; }
+type cluster_cancel_cmd      >/dev/null 2>&1 || cluster_cancel_cmd()      { echo "cluster_cancel $1"; }
+type cluster_alloc_state_cmd >/dev/null 2>&1 || cluster_alloc_state_cmd() { echo "cluster_alloc_state $1"; }
 PPN=$(bench_ppn); EXP=$(bench_expect "$N"); NRANKS=$((N*PPN)); LDP=$(bench_ldpath)
 OUT="$OUTROOT/${PLUGIN}/${N}n"; mkdir -p "$OUT"
 HF="$OUT/hostfile.txt"
@@ -139,12 +140,14 @@ run_arm(){ local arm=$1 it=$2 tmp rc cmd
 # DRY RUN: print REAL, copy-pasteable commands -- the actual salloc / ssh mpirun (or
 # flux) lines you could run by hand -- then exit WITHOUT executing them. To produce
 # real node names it performs only READ-ONLY discovery (sinfo/squeue via the adapter);
-# it never allocates, launches, cancels, or sshes into a node.
+# it never allocates, launches, cancels, or sshes into a node. (The one local write is
+# OUTROOT/<plugin>/<N>n/hostfile.txt, refreshed so the printed launch line is exact --
+# no scheduler contact, no result logs.)
 if [ "$DRY_RUN" = 1 ]; then
   log "DRY_RUN=1: printing real commands (read-only discovery only), executing nothing."
   if [ "$EXTERNAL_JOB" = 1 ]; then
     echo "# reuse external JOBID=$JOBID (verify it is RUNNING):"
-    echo "    >>> squeue -h -j $JOBID -o '%t'"
+    echo "    >>> $(cluster_alloc_state_cmd "$JOBID")"
     mapfile -t NODES < <(cluster_alloc_nodes "$JOBID")
     [ "${#NODES[@]}" -eq 0 ] && NODES=("<node1>")
   else

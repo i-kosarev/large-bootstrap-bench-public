@@ -59,6 +59,7 @@ cluster_alloc_cmd() { _alloc_argv "$1"; echo "${ALLOC_ARGV[*]}"; }
 cluster_alloc_nodelist() {
   _alloc_argv "$1"
   local log; log=$(mktemp)
+  trap 'rm -f "$log"' RETURN          # don't leak the salloc capture file under /tmp
   "${ALLOC_ARGV[@]}" > "$log" 2>&1 &
   local i jid=""
   for i in $(seq 1 30); do
@@ -73,6 +74,8 @@ cluster_alloc_state() { # RUNNING|PENDING|DEAD
     R) echo RUNNING;; PD|CF) echo PENDING;; *) echo DEAD;;
   esac
 }
+# Print the exact, copy-pasteable job-state query (no execution).
+cluster_alloc_state_cmd() { echo "squeue -h -j $1 -o '%t'"; }
 cluster_alloc_nodes() { scontrol show hostnames "$(squeue -h -j "$1" -o '%N' 2>/dev/null)" 2>/dev/null; }
 cluster_time_left_sec() {
   local L; L=$(squeue -h -j "$1" -o '%L' 2>/dev/null); [ -z "$L" ] && { echo -1; return; }
