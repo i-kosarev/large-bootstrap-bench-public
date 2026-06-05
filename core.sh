@@ -19,7 +19,7 @@ HERE=$(cd "$(dirname "$0")"&&pwd)
 : "${CLUSTER:=slurm}"; : "${PLUGIN:=rccl_bootstrap_ib}"
 : "${N:?set N}"; : "${TARGET:=100}"; : "${BIND:=core}"; : "${TIMEOUT:=$((150+N*10))}"
 : "${SETTLE:=20}"; : "${SPARE:=0}"; : "${OUTROOT:=$HERE/results}"; : "${FAILMAX:=5}"
-: "${EXCLUDE_NODES:=}"
+: "${EXCLUDE_NODES:=}"; : "${DRY_RUN:=0}"
 # Existing-allocation aliases. JOBID is the canonical harness knob; JOB_ID is
 # accepted as an explicit spelling variant. Ambient scheduler variables such as
 # SLURM_JOB_ID are intentionally not auto-detected, to avoid surprising reuse.
@@ -33,6 +33,9 @@ PPN=$(bench_ppn); EXP=$(bench_expect "$N"); NRANKS=$((N*PPN)); LDP=$(bench_ldpat
 OUT="$OUTROOT/${PLUGIN}/${N}n"; mkdir -p "$OUT"
 HF="$OUT/hostfile.txt"
 log(){ echo "[$(date +%H:%M:%S)] $*"; }
+# Side-effecting cluster operations echo the exact command they are about to run on
+# a "    >>> ..." line (always, not just under DRY_RUN), so a real run is fully
+# traceable. DRY_RUN=1 prints the whole plan and executes nothing (see below).
 
 # Count complete iters across the fresh log AND every rotated .log.bak-* (rotate-don't-delete:
 # resume must be additive for any post-processing that reads the baks). An iter is complete
@@ -79,6 +82,7 @@ acquire(){
     local need=$((N+SPARE))   # spare nodes let acquire skip dirty entries from the pool
     [ "${#idle[@]}" -lt "$N" ] && { log "only ${#idle[@]} idle < $N needed"; return 1; }
     local take; take=$(printf '%s\n' "${idle[@]}"|head -$((need<${#idle[@]}?need:${#idle[@]}))|paste -sd,)
+    echo "    >>> cluster_alloc_nodelist $take"
     JOBID=$(cluster_alloc_nodelist "$take") || { log "alloc failed"; return 1; }
     we_allocated=1
     log "allocated JOBID=$JOBID"; mapfile -t pool < <(cluster_alloc_nodes "$JOBID")
@@ -88,7 +92,7 @@ acquire(){
   for n in "${pool[@]}"; do is_clean "$n" && CLEAN+=("$n"); [ "${#CLEAN[@]}" -ge "$N" ] && break; done
   if [ "${#CLEAN[@]}" -lt "$N" ]; then
     log "only ${#CLEAN[@]}/$N clean nodes"
-    [ "$we_allocated" = 1 ] && { log "freeing leaked alloc $JOBID"; cluster_cancel "$JOBID"; unset JOBID; }
+    [ "$we_allocated" = 1 ] && { log "freeing leaked alloc $JOBID"; echo "    >>> cluster_cancel $JOBID"; cluster_cancel "$JOBID"; unset JOBID; }
     return 1
   fi
   NODES=("${CLEAN[@]:0:N}")
@@ -98,6 +102,9 @@ acquire(){
 }
 
 run_arm(){ local arm=$1 it=$2 tmp rc
+  # Always echo the exact launch about to run, then execute (or skip if DRY_RUN).
+  echo "    >>> [iter $it $arm] cluster_launch $HEAD $HF $NRANKS $PPN $BIND $TIMEOUT $LDP -- $(bench_arm_cmd "$arm")"
+  [ "$DRY_RUN" = 1 ] && return 0
   if ! tmp=$(mktemp "$OUT/.${arm}.${it}.XXXXXX"); then
     echo "=== failed iter $it $arm rc=125 t=$(date +%s) mktemp failed ===" >> "$OUT/$arm.log" 2>/dev/null || true
     return 125
@@ -117,6 +124,25 @@ run_arm(){ local arm=$1 it=$2 tmp rc
   trap - RETURN
   return "$rc"
 }
+
+# DRY RUN: don't touch the scheduler at all. Print the plan -- what acquire would do
+# and the exact per-arm launch for one representative iteration -- then exit.
+if [ "$DRY_RUN" = 1 ]; then
+  log "DRY_RUN=1: printing the command plan, executing nothing."
+  if [ "$EXTERNAL_JOB" = 1 ]; then
+    echo "    >>> reuse external JOBID=$JOBID (would verify RUNNING via cluster_alloc_state)"
+    echo "    >>> nodes := cluster_alloc_nodes $JOBID"
+  else
+    echo "    >>> idle := cluster_idle_nodes   # pick N=$N (+SPARE=$SPARE) clean"
+    echo "    >>> JOBID := cluster_alloc_nodelist <first $((N+SPARE)) idle nodes>"
+  fi
+  echo "    >>> per node: cluster_node_health <node>  # gate: 0 D-state, load<$LOADMAX, kfd<=1"
+  HEAD="<head-node>"; HF="$OUT/hostfile.txt"
+  read -ra A <<< "$(bench_arms)"
+  for arm in "${A[@]}"; do run_arm "$arm" 1; done
+  log "DRY_RUN: would loop the above until each arm reaches TARGET=$TARGET (then cluster_cancel \$JOBID if self-allocated)."
+  exit 0
+fi
 
 acquire || { log "acquire failed; abort"; exit 1; }
 i=0
