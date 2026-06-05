@@ -26,9 +26,10 @@ trap 'rm -f "$ROOT/adapters/dry_probe.sh" "$ROOT/plugins/single_sample_plugin.sh
 run_dry(){ # $1=label, rest=env assignments
   local label=$1; shift
   rm -f "$MARK"; local out=/tmp/coredry_${label}.log
+  local outroot=/tmp/coredry_${label}_out; rm -rf "$outroot"
   set +e
   env "$@" DRY_RUN=1 CLUSTER=dry_probe PLUGIN=single_sample_plugin N=2 TARGET=100 \
-    OUTROOT=/tmp/coredry_${label}_out bash "$ROOT/core.sh" > "$out" 2>&1
+    OUTROOT="$outroot" bash "$ROOT/core.sh" > "$out" 2>&1
   local rc=$?
   set -e
   echo "--- $label (rc=$rc) ---"; sed -n '1,40p' "$out"

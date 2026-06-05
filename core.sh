@@ -101,18 +101,20 @@ acquire(){
   log "nodes: ${NODES[*]}"
 }
 
-run_arm(){ local arm=$1 it=$2 tmp rc
-  # Always echo the exact launch about to run, then execute (or skip if DRY_RUN).
-  echo "    >>> [iter $it $arm] cluster_launch $HEAD $HF $NRANKS $PPN $BIND $TIMEOUT $LDP -- $(bench_arm_cmd "$arm")"
+run_arm(){ local arm=$1 it=$2 tmp rc cmd
+  # Resolve the bench command ONCE so the echoed plan is exactly what runs (some
+  # plugins are non-deterministic, e.g. randomized args), then echo + execute it.
+  cmd=$(bench_arm_cmd "$arm")
+  echo "    >>> [iter $it $arm] cluster_launch $HEAD $HF $NRANKS $PPN $BIND $TIMEOUT $LDP -- $cmd"
   [ "$DRY_RUN" = 1 ] && return 0
   if ! tmp=$(mktemp "$OUT/.${arm}.${it}.XXXXXX"); then
     echo "=== failed iter $it $arm rc=125 t=$(date +%s) mktemp failed ===" >> "$OUT/$arm.log" 2>/dev/null || true
     return 125
   fi
   trap 'rm -f "$tmp"' RETURN
-  # bench_arm_cmd returns a shell-style argv fragment (mpirun -x flags + command).
-  # shellcheck disable=SC2046
-  cluster_launch "$HEAD" "$HF" "$NRANKS" "$PPN" "$BIND" "$TIMEOUT" "$LDP" -- $(bench_arm_cmd "$arm") > "$tmp" 2>&1
+  # $cmd is a shell-style argv fragment (mpirun -x flags + command); word-split intentionally.
+  # shellcheck disable=SC2086
+  cluster_launch "$HEAD" "$HF" "$NRANKS" "$PPN" "$BIND" "$TIMEOUT" "$LDP" -- $cmd > "$tmp" 2>&1
   rc=$?
   if [ "$rc" -eq 0 ]; then
     echo "=== iter $it $arm t=$(date +%s) ===" >> "$OUT/$arm.log"
