@@ -12,6 +12,11 @@ stable methodology, portable across SLURM and Flux.
   # on shared clusters; SPARE=0 grabs exactly N and fails if any node is unclean).
   # Results are written under $OUTROOT/<plugin>/<N>n/{on,off}.log; core.sh's stdout
   # is just progress. Run it backgrounded if you like: append '&' (or use tmux/screen).
+  # Every side-effecting cluster command is echoed on a "    >>> ..." line right
+  # before it runs, so a live run is fully traceable.
+  # DRY_RUN=1 prints the full command plan (allocation + per-arm launches) and
+  # executes nothing -- no scheduler calls, no logs. Use it to preview a run:
+  #   DRY_RUN=1 CLUSTER=slurm PLUGIN=<plugin> N=<nodes> ... bash core.sh
   # <plugin> = a plugins/<plugin>.sh bench definition (see LAYOUT), e.g.
   #   rccl_bootstrap_ib (IB fabric) or rccl_bootstrap_tcp (plain-TCP fabric).
   # Resume: rerun the identical command (done-iter count is read from the logs).
@@ -35,6 +40,7 @@ stable methodology, portable across SLURM and Flux.
   #   SPARE                   extra nodes to allocate before health filtering (default 0);
   #                           set >0 on noisy pools to skip dirty nodes without re-alloc.
   #   FAILMAX                 abort after this many consecutive failed arms (default 5).
+  #   DRY_RUN                 1 => print the command plan and execute nothing (default 0).
   #   SLURM_NODE_FORMAT       sinfo node token for allocation names: %n default, %N for
   #                           clusters whose salloc --nodelist requires FQDNs.
   #   NODE_FEATURE            SLURM feature(s) keeping all ranks under one leaf switch,
